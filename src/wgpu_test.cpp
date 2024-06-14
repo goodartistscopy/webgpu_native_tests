@@ -1,7 +1,9 @@
 #include <iostream>
+#include <fstream>
 #include <cassert>
 #include <chrono>
 #include <unistd.h>
+#include <vector>
 
 #include <GLFW/glfw3.h>
 //#include <webgpu/webgpu_cpp.h>
@@ -13,8 +15,8 @@
 using namespace wgpu;
 
 struct GPU {
-    Instance instance; // could skip adapter.GetInstance()
-    Adapter adapter; // could skip device.GetAdapter()
+    Instance instance; // XXX could avoid and use adapter.GetInstance()
+    Adapter adapter; // XXX could avoid and use device.GetAdapter()
     Device device;
     std::unordered_map<GLFWwindow*, Surface> surfaces;
 
@@ -25,12 +27,10 @@ struct GPU {
             windows.second.Unconfigure();
             glfwDestroyWindow(windows.first);
         }
-        //device.ForceLoss(DeviceLostReason::Destroyed, "client-initiated destroy");
         device.Destroy();
     }
 };
 
-//Device 
 [[nodiscard]] GPU init_webgpu() {
     GPU gpu{};
     gpu.instance = CreateInstance();
@@ -79,11 +79,12 @@ struct GPU {
 
 void on_window_resized(GLFWwindow* window, int width, int height)
 {
-    GPU* gpu = static_cast<GPU*>(glfwGetWindowUserPointer(window));
+    GPU* gpu = reinterpret_cast<GPU*>(glfwGetWindowUserPointer(window));
     if (auto surface = gpu->surfaces.find(window); surface != gpu->surfaces.end()) {
         SurfaceConfiguration config{
             .device = gpu->device,
             .format = TextureFormat::BGRA8Unorm,
+            .usage = TextureUsage::RenderAttachment | TextureUsage::CopySrc,
             .width = static_cast<uint32_t>(width),
             .height = static_cast<uint32_t>(height),
             .presentMode = PresentMode::Fifo,
@@ -114,6 +115,7 @@ GLFWwindow* create_window(GPU &gpu, int width, int height) {
     SurfaceConfiguration config{
         .device = gpu.device,
         .format = TextureFormat::BGRA8Unorm,
+        .usage = TextureUsage::RenderAttachment | TextureUsage::CopySrc,
         .width = static_cast<uint32_t>(width),
         .height = static_cast<uint32_t>(height),
         .presentMode = PresentMode::Fifo,
@@ -122,9 +124,9 @@ GLFWwindow* create_window(GPU &gpu, int width, int height) {
     
     gpu.surfaces[window] = surface;
 
-    TextureFormat preferred_format = surface.GetPreferredFormat(gpu.adapter);
     SurfaceCapabilities capabilities;
     if (surface.GetCapabilities(gpu.adapter, &capabilities)) {
+        TextureFormat preferred_format = capabilities.formats[0];
         std::cout << "Supported surface formats: [";
         for (int i = 0; i < capabilities.formatCount; i++) {
             auto format = capabilities.formats[i];
@@ -177,7 +179,7 @@ int main(int argc, char *argv[]) {
     
     ImGuiWebGPU imgui(gpu.device);
 
-    GLFWwindow* window = create_window(gpu, 640, 480);
+    GLFWwindow* window = create_window(gpu, 1024, 768);
     if (!window) {
         gpu.release();
         glfwTerminate();
@@ -210,6 +212,8 @@ int main(int argc, char *argv[]) {
     RenderPipeline pipeline = gpu.device.CreateRenderPipeline(&descriptor);
 
     while (!glfwWindowShouldClose(window)) {
+        std::vector<CommandBuffer> commands;
+
         //glfwPollEvents();
         glfwWaitEvents();
 
@@ -236,9 +240,9 @@ int main(int argc, char *argv[]) {
         pass.SetPipeline(pipeline);
         pass.Draw(3);
         pass.End();
-        CommandBuffer commands = encoder.Finish();
-        gpu.device.GetQueue().Submit(1, &commands);
+        commands.push_back(encoder.Finish());
 
+#if 0
         imgui.begin_frame(surface_info.texture.GetWidth(), surface_info.texture.GetHeight());
         
         if (ImGui::BeginMenu("File", true))
@@ -256,13 +260,84 @@ int main(int argc, char *argv[]) {
         ImGui::ShowDemoWindow();
 
         imgui.end_frame(surface_info.texture);
+#endif
 
+#if 1
+        CommandEncoder rb_encoder = gpu.device.CreateCommandEncoder();
+
+        // Read back
+        uint32_t texture_size = surface_info.texture.GetWidth() * surface_info.texture.GetHeight() * 4;
+        BufferDescriptor desc{
+            .label = "readback",
+            .usage = BufferUsage::CopyDst | BufferUsage::MapRead,
+            .size = texture_size, 
+        };
+        Buffer read_back_buffer = gpu.device.CreateBuffer(&desc);
+
+        ImageCopyTexture source{
+            .texture = surface_info.texture,
+        };
+        ImageCopyBuffer destination{
+            .layout = {
+                .offset = 0,
+                .bytesPerRow = surface_info.texture.GetWidth() * 4,
+                .rowsPerImage = surface_info.texture.GetHeight(),
+            },
+            .buffer = read_back_buffer,
+        };
+        Extent3D extent{
+            .width = surface_info.texture.GetWidth(),
+            .height = surface_info.texture.GetHeight(),
+        };
+        rb_encoder.CopyTextureToBuffer(&source, &destination, &extent);
+
+        commands.push_back(rb_encoder.Finish());
+        gpu.device.GetQueue().Submit(commands.size(), commands.data());
+
+        BufferMapCallbackInfo map_info{
+            //.mode = CallbackMode::WaitAnyOnly,  // -> always times out, cb never called
+            .mode = CallbackMode::AllowSpontaneous, // -> future sometimes complete (even without calling ProcesseEvents())
+            //.mode = CallbackMode::AllowProcessEvents, // -> future sometimes complete (even without calling ProcesseEvents())
+            .callback = [](WGPUBufferMapAsyncStatus status, void *userdata) {
+                if (status != WGPUBufferMapAsyncStatus_Success) {
+                    std::cout << "Readback callback error: " << static_cast<int>(status) << "\n";
+                    return;
+                }
+                Buffer *read_back_buffer = reinterpret_cast<Buffer*>(userdata);
+
+                const char *data = reinterpret_cast<const char*>(read_back_buffer->GetConstMappedRange());
+                std::cout << "Saving capture\n";
+                std::ofstream file("capture.ppm");
+                file << "P6\n" << 1024 << " " << 768 << "\n" << 255 << "\n";
+                const char* pixel = data;
+                for (int i = 0; i < 1024 * 768; i++, pixel += 4) {
+                    char rgb[3] = { *(pixel + 2), *(pixel + 1), *pixel };
+                    file.write(rgb, 3);
+                }
+                delete read_back_buffer;
+            },
+            /* .userdata = &read_back_buffer, */
+            .userdata = new Buffer(read_back_buffer),
+        };
+        FutureWaitInfo read_back_info;
+        // note: non 0 timeout values are not supported in any modes
+        read_back_info.future = read_back_buffer.MapAsync(MapMode::Read, 0, texture_size, map_info);
+        auto status = gpu.instance.WaitAny(1, &read_back_info, 0);
+        if (status != WaitStatus::Success || !read_back_info.completed) {
+            std::cout << "Future did not complete, status = " << static_cast<int>(status) << "\n";
+        } /*else {
+            std::cout << "future completed\n";
+        }*/
+#else
+        gpu.device.GetQueue().Submit(commands.size(), commands.data());
+#endif
+        
         surface.Present();
-
+        
         // Poll for and process events
         gpu.instance.ProcessEvents();   
 
-        // fps counter
+        // simple fps counter
         static int frame_count = 0;
         static auto prev = std::chrono::high_resolution_clock::now();
         if (frame_count >= 60) {

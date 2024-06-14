@@ -11,19 +11,11 @@ class ImGuiWebGPU
 public:
     ImGuiWebGPU(wgpu::Device device);
 
+    ~ImGuiWebGPU();
+
     void begin_frame(uint32_t win_width, uint32_t win_height);
 
     void end_frame(wgpu::Texture target);
-
-    /* void init(size_t winWidth, size_t winHeight, Chameleon::ScenePtr scene); */
-
-    /* void resize(size_t winWidth, size_t winHeight); */
-
-    /* /// */
-    /* ~ImGuiHelper(); */
-
-    /* /// */
-    /* ImGuiContext* getContext() const; */
 
     /* void setModifiers(int mods) const; */
 
@@ -36,14 +28,6 @@ public:
     /* void setButtonState(UI::Mouse::Enum button, UI::Action::Enum action, int mods); */
 
     /* void setWheelScroll(double amount); */
-
-    /* /// Start a new Imgui frame */
-    /* void begin(); */
-
-    /* /// End the ImGui frame */
-    /* void end(); */
-
-    /* static ImTextureID createTextureId(const std::string& id); */
 
 private:
     /* static const std::string s_fontTextureName; */

@@ -235,72 +235,11 @@ ImGuiWebGPU::ImGuiWebGPU(Device device) {
     this->last_texture = &this->font_texture;
 }
 
-/* ImGuiHelper::~ImGuiHelper() */
-/* { */
-/*     if (m_context) */
-/*     { */
-/*         ImGui::DestroyContext(m_context); */
-/*     } */
-
-/*     TextureManager::getInstance().remove(s_fontTextureName); */
-
-/*     for (const auto& mesh : m_meshes) */
-/*     { */
-/*         MeshManager::getInstance().remove(mesh); */
-/*     } */
-
-/*     if (m_scene) */
-/*     { */
-/*         for (const auto& entity : m_entities) */
-/*         { */
-/*             m_scene->removeEntity(entity); */
-/*         } */
-/*     } */
-/* } */
-
-/* void ImGuiHelper::init(size_t winWidth, size_t winHeight, Chameleon::ScenePtr scene) */
-/* { */
-/*     m_context = ImGui::CreateContext(); */
-/*     m_scene   = scene; */
-
-/*     m_meshes.clear(); */
-/*     m_entities.clear(); */
-
-/*     ImGuiIO& io = ImGui::GetIO(); */
-
-/*     io.DisplaySize = ImVec2(winWidth, winHeight); */
-/*     io.IniFilename = nullptr; */
-
-/*     ImGuiStyle& style = ImGui::GetStyle(); */
-/*     ImGui::StyleColorsClassic(&style); */
-/*     style.FrameRounding    = 4.0f; */
-/*     style.WindowBorderSize = 0.0f; */
-/*     style.WindowPadding    = ImVec2(10.0f, 10.0f); */
-
-/*     style.AntiAliasedLines       = true; */
-/*     style.AntiAliasedLinesUseTex = false; */
-
-/*     uint8_t* data; */
-/*     int32_t  texWidth; */
-/*     int32_t  texHeight; */
-/*     io.Fonts->GetTexDataAsRGBA32(&data, &texWidth, &texHeight); */
-/*     io.Fonts->SetTexID((void*)&s_fontTextureName); */
-/*     size_t size = texWidth * texHeight * 4; */
-/*     // assume the ImGui data outlive the texture */
-/*     TextureUPtr tex = std::make_unique<Texture>(Texture::makeLayout(Texture::Format::BGRA8, texWidth, texHeight), MemBuffer(data, size)); */
-/*     TextureManager::getInstance().add(s_fontTextureName, std::move(tex)); */
-/* } */
-
-/* void ImGuiHelper::resize(size_t winWidth, size_t winHeight) */
-/* { */
-/*     ImGuiIO& io    = ImGui::GetIO(); */
-/*     io.DisplaySize = ImVec2(winWidth, winHeight); */
-/* } */
-
-/* ImGuiContext* ImGuiHelper::getContext() const */
-/* { */
-/*     return m_context; */
-/* } */
+ImGuiWebGPU::~ImGuiWebGPU() {
+    if (context) {
+        ImGui::DestroyContext(context);
+    }
+}
 
 /* void ImGuiHelper::setModifiers(int mods) const */
 /* { */
@@ -433,6 +372,7 @@ void ImGuiWebGPU::end_frame(Texture target) {
             if (pcmd->UserCallback) {
                 pcmd->UserCallback(commands, pcmd);
             } else {
+                // TODO handle big meshes:
                 // - To use 16-bit indices + allow large meshes: backend need to set 'io.BackendFlags |= ImGuiBackendFlags_RendererHasVtxOffset' and handle ImDrawCmd::VtxOffset (recommended).
 
                 pass.SetScissorRect(
@@ -477,155 +417,6 @@ void ImGuiWebGPU::end_frame(Texture target) {
     CommandBuffer cmd_buffer = encoder.Finish();
     this->device.GetQueue().Submit(1, &cmd_buffer);
 }
-
-/* void ImGuiHelper::end() */
-/* { */
-/*     if (!m_scene) */
-/*     { */
-/*         LOG(error) << "ImGuiHelper not initialized"; */
-/*         return; */
-/*     } */
-
-/*     // first remove all entities from the previous frame */
-/*     for (const auto& entityName : m_entities) */
-/*     { */
-/*         m_scene->removeEntity(entityName); */
-/*     } */
-/*     m_entities.clear(); */
-
-/*     m_meshes.clear(); */
-
-/*     ImGui::Render(); */
-/*     ImDrawData* drawData = ImGui::GetDrawData(); */
-
-/*     LOG(debug) << "IMGUI: command list count: " << drawData->CmdListsCount; */
-/*     uint16_t seqId = 1; */
-/*     for (int n = 0; n < drawData->CmdListsCount; n++) */
-/*     { */
-/*         const ImDrawList* cmdList   = drawData->CmdLists[n]; */
-/*         const ImDrawVert* vtxBuffer = cmdList->VtxBuffer.Data; */
-/*         const ImDrawIdx*  idxBuffer = cmdList->IdxBuffer.Data; */
-
-/*         uint32_t numVertices = (uint32_t)cmdList->VtxBuffer.size(); */
-
-/*         VertexBuffer* vertices = new VertexBuffer(); */
-/*         vertices->resize(numVertices); */
-/*         vertices->addAttribute(Attribute::Position, AttributeType::Float, 3); */
-/*         vertices->addAttribute(Attribute::TexCoord0, AttributeType::Float, 2); */
-/*         vertices->addAttribute(Attribute::Color0, AttributeType::Float, 4); */
-
-/*         AttributeArray<float> pos  = vertices->get<float>(Attribute::Position); */
-/*         AttributeArray<float> tcs  = vertices->get<float>(Attribute::TexCoord0); */
-/*         AttributeArray<float> cols = vertices->get<float>(Attribute::Color0); */
-
-/*         using vec4 = std::array<double, 4>; */
-/*         using vec2 = std::array<double, 2>; */
-/*         using vec3 = std::array<double, 3>; */
-
-/*         for (uint16_t i = 0; i < numVertices; i++) */
-/*         { */
-/*             pos[i]       = vec3 {vtxBuffer[i].pos.x, vtxBuffer[i].pos.y, 0}; */
-/*             tcs[i]       = vec2 {vtxBuffer[i].uv.x, vtxBuffer[i].uv.y}; */
-/*             ImVec4 color = ImGui::ColorConvertU32ToFloat4(vtxBuffer[i].col); */
-/*             cols[i]      = vec4 {color.x, color.y, color.z, color.w}; */
-/*         } */
-/*         MeshUPtr imGuiMesh = std::make_unique<Mesh>(); */
-/*         imGuiMesh->addVertexBuffer(std::unique_ptr<VertexBuffer>(vertices)); */
-
-/*         LOG(debug) << "IMGUI: command buffer count: " << cmdList->CmdBuffer.Size; */
-
-/*         struct SubMeshParams */
-/*         { */
-/*             glm::vec4    scissor; */
-/*             std::string* textureId; */
-/*         }; */
-
-/*         std::unordered_map<std::string, SubMeshParams> extraParams; */
-/*         for (int cmd = 0; cmd < cmdList->CmdBuffer.Size; cmd++) */
-/*         { */
-/*             const ImDrawCmd* pcmd = &cmdList->CmdBuffer[cmd]; */
-/*             if (pcmd->ElemCount == 0) */
-/*             { */
-/*                 continue; */
-/*             } */
-
-/*             if (pcmd->UserCallback) */
-/*             { */
-/*                 pcmd->UserCallback(cmdList, pcmd); */
-/*             } */
-/*             else */
-/*             { */
-/*                 IndexBuffer<uint16_t>* faces = new IndexBuffer<uint16_t>(PrimitiveType::Triangles); */
-/*                 faces->resize(pcmd->ElemCount / 3); */
-/*                 using face = std::array<uint16_t, 3>; */
-
-/*                 uint32_t offset = pcmd->IdxOffset; */
-/*                 for (uint16_t i = 0; i < pcmd->ElemCount / 3; i++) */
-/*                 { */
-/*                     (*faces)[i] = face {idxBuffer[offset + 0], idxBuffer[offset + 2], idxBuffer[offset + 1]}; */
-/*                     float depth = 1.0 / seqId; */
-
-/*                     pos[idxBuffer[offset + 0]][2] = depth; */
-/*                     pos[idxBuffer[offset + 1]][2] = depth; */
-/*                     pos[idxBuffer[offset + 2]][2] = depth; */
-/*                     offset += 3; */
-/*                 } */
-/*                 seqId++; */
-
-/*                 std::string subMeshName = std::to_string(cmd); */
-
-/*                 LOG(debug) << "IMGUI: adding subMesh: " << subMeshName; */
-/*                 imGuiMesh->addSubMesh(subMeshName, std::unique_ptr<IndexBufferBase>(faces)); */
-
-/*                 extraParams[subMeshName].textureId = (std::string*)pcmd->TextureId; */
-/*                 extraParams[subMeshName].scissor = */
-/*                     glm::vec4(pcmd->ClipRect.x, pcmd->ClipRect.y, pcmd->ClipRect.z - pcmd->ClipRect.x, pcmd->ClipRect.w - pcmd->ClipRect.y); */
-/*             } */
-/*         } */
-
-/*         std::string meshName = s_baseMeshName + std::to_string(n); */
-/*         MeshManager::getInstance().replace(meshName, std::move(imGuiMesh)); */
-/*         LOG(debug) << "IMGUI: adding mesh: " << meshName; */
-
-/*         m_meshes.push_back(meshName); */
-
-/*         MeshPtr mesh = MeshManager::getInstance().get(meshName).lock(); */
-/*         for (const auto& subMeshName : mesh->getSubMeshNames()) */
-/*         { */
-/*             std::string entityName = meshName + "." + subMeshName; */
-/*             LOG(debug) << "IMGUI: adding entity: " << entityName; */
-/*             Entity* entity = m_scene->addEntity(entityName, meshName, subMeshName); */
-/*             entity->set("imgui"); */
-/*             entity->setAttribute("scissor", extraParams[subMeshName].scissor); */
-/*             if (extraParams[subMeshName].textureId) */
-/*             { */
-/*                 std::string& texId = *extraParams[subMeshName].textureId; */
-
-/*                 LOG(debug) << "IMGUI: Texture id: " << texId; */
-/*                 entity->setAttribute("texColor", Sampler(BaseType::Sampler2D, texId)); */
-
-/*                 TexturePtr tex = TextureManager::getInstance().get(texId).lock(); */
-/*                 if (tex && tex->getLayout().m_srgb) */
-/*                 { */
-/*                     // it's only used as a flag, value is not important */
-/*                     entity->setAttribute("texIssRGB", glm::vec4(0.0)); */
-/*                 } */
-
-/*                 if (extraParams[subMeshName].textureId != &s_fontTextureName) */
-/*                 { */
-/*                     delete extraParams[subMeshName].textureId; */
-/*                 } */
-/*             } */
-
-/*             m_entities.push_back(entityName); */
-/*         } */
-/*     } */
-/* } */
-
-/* ImTextureID ImGuiHelper::createTextureId(const std::string& id) */
-/* { */
-/*     return new std::string(id); */
-/* } */
 
 /* ImGuiKey convertToImGuiKey(UI::Key::Enum key) */
 /* { */
