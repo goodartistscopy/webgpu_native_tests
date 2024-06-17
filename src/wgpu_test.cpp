@@ -38,17 +38,16 @@ struct GPU {
     RequestAdapterOptions options = {
         .compatibleSurface = nullptr,
         .powerPreference = PowerPreference::HighPerformance,
-        .backendType = BackendType::Vulkan,
         .forceFallbackAdapter = false,
         .compatibilityMode = false,
     };
     FutureWaitInfo adapter_future;
     adapter_future.future = gpu.instance.RequestAdapter(&options, CallbackMode::WaitAnyOnly,
-        [&gpu] (RequestAdapterStatus status, Adapter adapter, char const* message) { 
+        [&gpu] (RequestAdapterStatus status, Adapter adapter, char const* message) {
             assert(status == RequestAdapterStatus::Success);
             gpu.adapter = adapter;
     });
- 
+
     auto status = gpu.instance.WaitAny(1, &adapter_future, 0);
     if (status == WaitStatus::Success && adapter_future.completed) {
         DeviceDescriptor options = {

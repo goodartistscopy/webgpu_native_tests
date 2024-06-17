@@ -1,8 +1,11 @@
 cmake_minimum_required(VERSION 3.27)
 
 project(WebGPUTest VERSION 0.1
-                   DESCRIPTION "WebGPU test" 
+                   DESCRIPTION "WebGPU test"
                    LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED TRUE)
 
 option(USE_MOLD "Use mold linker instead ld" OFF)
 
@@ -39,5 +42,4 @@ target_sources(wgpu_test
 )
 
 #target_link_options(wgpu_test PRIVATE -lGL)
-target_link_libraries(wgpu_test PRIVATE webgpu_glfw webgpu_dawn imgui)
-
+target_link_libraries(wgpu_test PRIVATE webgpu_glfw glfw webgpu_dawn imgui)
