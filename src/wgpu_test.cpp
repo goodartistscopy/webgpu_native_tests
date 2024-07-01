@@ -13,6 +13,7 @@
 #include <GLFW/glfw3.h>
 #include <webgpu/webgpu_glfw.h>
 
+#include "imgui/imgui.h"
 #include "imgui_helpers.h"
 #include "webgpu_helpers.h"
 
@@ -80,7 +81,8 @@ struct GPU {
     return gpu;
 }
 
-void on_window_resized(GLFWwindow* window, int width, int height) {
+void on_window_resized(GLFWwindow* window, int width, int height)
+{
     GPU* gpu = reinterpret_cast<GPU*>(glfwGetWindowUserPointer(window));
     if (auto surface = gpu->surfaces.find(window); surface != gpu->surfaces.end()) {
         SurfaceConfiguration config{
@@ -97,6 +99,13 @@ void on_window_resized(GLFWwindow* window, int width, int height) {
     }
 }
 
+static bool show_imgui_demo = false;
+void on_key_pressed(GLFWwindow *window, int key, int scancode, int action, int mods) {
+    if (key == GLFW_KEY_F1 && action == GLFW_PRESS) {
+        show_imgui_demo = !show_imgui_demo;
+    }
+}
+
 GLFWwindow* create_window(GPU &gpu, int width, int height) {
     GLFWwindow* window = glfwCreateWindow(width, height, "WebGPU", NULL, NULL);
     if (!window) {
@@ -105,6 +114,7 @@ GLFWwindow* create_window(GPU &gpu, int width, int height) {
 
     glfwSetWindowUserPointer(window, &gpu);
     glfwSetWindowSizeCallback(window, on_window_resized);
+    glfwSetKeyCallback(window, on_key_pressed);
 
     Surface surface = glfw::CreateSurfaceForWindow(gpu.instance, window);
     if (!surface) {
@@ -187,6 +197,8 @@ int main(int argc, char *argv[]) {
         return -1;
     }
 
+    ImGuiGlfw imgui_glfw(window);
+
     ShaderModuleWGSLDescriptor wgsl_desc;
     wgsl_desc.code = shader_code;
 
@@ -217,12 +229,8 @@ int main(int argc, char *argv[]) {
 
     TextureCapture capture(gpu.device);
 
-    int frame_id = 0;
     while (!glfwWindowShouldClose(window)) {
         std::vector<CommandBuffer> commands;
-
-        //glfwPollEvents();
-        glfwWaitEvents();
 
         Surface surface;
         SurfaceTexture surface_info;
@@ -251,67 +259,116 @@ int main(int argc, char *argv[]) {
         commands.push_back(encoder.Finish());
         gpu.device.GetQueue().Submit(commands.size(), commands.data());
 
-#if 1
         imgui.begin_frame(surface_info.texture.GetWidth(), surface_info.texture.GetHeight());
-
-        if (ImGui::BeginMenu("File", true))
-        {
-            if (ImGui::MenuItem("Open asset...", nullptr, false))
-            {
-            }
-
-            if (ImGui::MenuItem("Import image...", nullptr, nullptr))
-            {
-            }
-            ImGui::EndMenu();
-        }
-
-        ImGui::ShowDemoWindow();
-
-        imgui.end_frame(surface_info.texture);
-#endif
-
-        capture.push(surface_info.texture, nullptr,
-            [frame_id](char const * image_data, ImageDataLayout const& layout) {
-               std::stringstream file_name;
-               file_name << "capture_" << std::setfill('0') << std::setw(4) << std::to_string(frame_id) << ".ppm";
-
-               std::ofstream file(file_name.str());
-               file << "P6\n" << layout.width << " " << layout.height << "\n" << 255 << "\n";
-               for (int row = 0; row <layout.height; row++) {
-                    char const * pixel = image_data + row * layout.row_stride;
-                    for (int col = 0; col <layout.width; col++, pixel += 4) {
-                        if (layout.format == TextureFormat::BGRA8Unorm) {
-                            char rgb[3] = { *(pixel + 2), *(pixel + 1), *pixel };
-                            file.write(rgb, 3);
-                        } else {
-                            file.write(pixel, 3);
-                        }
-                   }
-               }
-        });
-
-        surface.Present();
-
-        // Poll for and process events
-        gpu.instance.ProcessEvents();
-
-        capture.pop();
 
         // simple fps counter
         static int frame_count = 0;
         static auto prev = std::chrono::high_resolution_clock::now();
+        static float mean_fps = 0.0;
         if (frame_count >= 60) {
             auto now = std::chrono::high_resolution_clock::now();
             std::chrono::duration<double, std::micro> mean_us = now - prev;
-            std::cout << "Mean fps = " << float(frame_count) / (mean_us.count() * 1e-6) << "\n";
+            mean_fps = float(frame_count) / (mean_us.count() * 1e-6);
             prev = now;
             frame_count = 1;
         } else {
             frame_count++;
         }
 
-        frame_id++;
+        ImGuiWindowFlags window_flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav;
+        window_flags |= ImGuiWindowFlags_NoMove;
+
+        const float PAD = 10.0f;
+        const ImGuiViewport* viewport = ImGui::GetMainViewport();
+        ImVec2 work_pos = viewport->WorkPos; // Use work area to avoid menu-bar/task-bar, if any!
+        ImVec2 work_size = viewport->WorkSize;
+        ImVec2 window_pos, window_pos_pivot;
+        window_pos.x = work_pos.x + PAD;
+        window_pos.y = work_pos.y + PAD;
+        window_pos_pivot.x = 0.0f;
+        window_pos_pivot.y = 0.0f;
+        ImGui::SetNextWindowPos(window_pos, ImGuiCond_Always, window_pos_pivot);
+
+        static std::stringstream capture_file_name;
+        static int capture_seq = 0;
+        static int capture_frame = 0;
+        static bool do_capture = false;
+        static bool capture_include_ui = false;
+        if (ImGui::Begin("Example: Simple overlay", nullptr, window_flags)) {
+            ImGui::Text("[F1] Open/Close demo window");
+            ImGui::Text("Fps: %.1f", mean_fps);
+            const char * capture_btn_labels[2] = { "Screen capture", "Stop capture" };
+            const ImVec4 capture_btn_colors[2] = { ImGui::GetStyleColorVec4(ImGuiCol_Button), (ImVec4)ImColor::HSV(0.0f, 0.6f, 0.6f) };
+            const ImVec4 capture_btn_hovered_colors[2] = { ImGui::GetStyleColorVec4(ImGuiCol_ButtonHovered), (ImVec4)ImColor::HSV(0.0f, 0.6f, 0.8f) };
+            const ImVec4 capture_btn_active_colors[2] = { ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive), (ImVec4)ImColor::HSV(0.0f, 0.6f, 1.0f) };
+            ImGui::PushStyleColor(ImGuiCol_Button, capture_btn_colors[do_capture]);
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, capture_btn_hovered_colors[do_capture]);
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive, capture_btn_active_colors[do_capture]);
+            if (ImGui::Button(capture_btn_labels[do_capture])) {
+                do_capture = !do_capture;
+                if (do_capture) {
+                    capture_seq = (capture_seq + 1) % 100;
+                    capture_frame = 0;
+                }
+            }
+            ImGui::PopStyleColor(3);
+            ImGui::SameLine();
+            ImGui::Checkbox("/w UI", &capture_include_ui);
+
+            if (do_capture) {
+                capture_file_name.str("");
+                capture_file_name << "capture_s" << std::setfill('0') << std::setw(2) << capture_seq
+                    << "_" << std::setw(5) << capture_frame << ".ppm";
+                ImGui::Text("%s", capture_file_name.str().c_str());
+                capture_frame = (capture_frame + 1) % 10000;
+            }
+        }
+        ImGui::End();
+
+        if (show_imgui_demo) {
+            ImGui::ShowDemoWindow(&show_imgui_demo);
+        }
+
+        if (capture_include_ui) {
+            imgui.end_frame(surface_info.texture);
+        }
+
+        if (do_capture) {
+            std::string file_name = capture_file_name.str();
+            capture.push(surface_info.texture, nullptr,
+                [file_name](char const * image_data, ImageDataLayout const& layout) {
+                std::ofstream file(file_name);
+                file << "P6\n" << layout.width << " " << layout.height << "\n" << 255 << "\n";
+                for (int row = 0; row <layout.height; row++) {
+                        char const * pixel = image_data + row * layout.row_stride;
+                        for (int col = 0; col <layout.width; col++, pixel += 4) {
+                            if (layout.format == TextureFormat::BGRA8Unorm) {
+                                char rgb[3] = { *(pixel + 2), *(pixel + 1), *pixel };
+                                file.write(rgb, 3);
+                            } else {
+                                file.write(pixel, 3);
+                            }
+                    }
+                }
+            });
+        }
+
+        if (!capture_include_ui) {
+            imgui.end_frame(surface_info.texture);
+        }
+
+        surface.Present();
+
+        // Poll for and process events
+        gpu.instance.ProcessEvents();
+
+        if (do_capture) {
+            capture.pop();
+        }
+
+        if (imgui_glfw.is_idle()) {
+            glfwWaitEvents();
+        }
     }
 
     gpu.release();

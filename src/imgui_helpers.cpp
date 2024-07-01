@@ -2,9 +2,14 @@
 
 /* #include <algorithm> */
 /* #include <unordered_map> */
+#include <_types/_uint16_t.h>
+#include <_types/_uint32_t.h>
+#include <cstring>
 #include <iostream>
 #include <string_view>
 
+#include "imgui/imgui.h"
+#include "imgui/imgui_internal.h"
 #include "webgpu_helpers.h"
 
 using namespace wgpu;
@@ -22,8 +27,8 @@ ImGuiWebGPU::ImGuiWebGPU(Device device) {
 
     ImGuiIO& io = ImGui::GetIO();
 
-    /* io.DisplaySize = ImVec2(winWidth, winHeight); */
-    /* io.IniFilename = nullptr; */
+    io.BackendFlags |= ImGuiBackendFlags_RendererHasVtxOffset;
+    io.IniFilename = nullptr;
 
     ImGuiStyle& style = ImGui::GetStyle();
     ImGui::StyleColorsClassic(&style);
@@ -58,7 +63,6 @@ ImGuiWebGPU::ImGuiWebGPU(Device device) {
             @location(0) uv: vec2f,
             @location(1) color: vec4f,
         };
-        
 
         struct DrawInfo {
             tex_is_srgb: u32,
@@ -171,7 +175,7 @@ ImGuiWebGPU::ImGuiWebGPU(Device device) {
         .size = 16,
     };
     this->view_uniform_buffer = device.CreateBuffer(&view_uniform_desc);
- 
+
     // draw flags uniform buffer
     BufferDescriptor draw_flags_uniform_desc{
         .usage = BufferUsage::Uniform | BufferUsage::CopyDst,
@@ -192,7 +196,7 @@ ImGuiWebGPU::ImGuiWebGPU(Device device) {
         .entries = pass_bindings,
     };
     this->bind_groups[0] = device.CreateBindGroup(&bind_group_desc);
-    
+
     // Font glyphs texture atlas
     uint8_t* data;
     int32_t w, h;
@@ -241,60 +245,6 @@ ImGuiWebGPU::~ImGuiWebGPU() {
     }
 }
 
-/* void ImGuiHelper::setModifiers(int mods) const */
-/* { */
-/*     ImGuiIO& io = ImGui::GetIO(); */
-/*     io.AddKeyEvent(ImGuiKey_ModCtrl, (mods & UI::Modifier::Enum::Ctrl) != 0); */
-/*     io.AddKeyEvent(ImGuiKey_ModShift, (mods & UI::Modifier::Enum::Shift) != 0); */
-/*     io.AddKeyEvent(ImGuiKey_ModAlt, (mods & UI::Modifier::Enum::Alt) != 0); */
-/*     io.AddKeyEvent(ImGuiKey_ModSuper, (mods & UI::Modifier::Enum::Super) != 0); */
-/* } */
-
-/* void ImGuiHelper::setKeyState(UI::Key::Enum key, UI::Action::Enum action, int mods) const */
-/* { */
-/*     if (action != UI::Action::Enum::Press && action != UI::Action::Release) */
-/*     { */
-/*         return; */
-/*     } */
-
-/*     setModifiers(mods); */
-
-/*     ImGuiIO& io       = ImGui::GetIO(); */
-/*     ImGuiKey imGuiKey = convertToImGuiKey(key); */
-/*     io.AddKeyEvent(imGuiKey, (action == UI::Action::Enum::Press)); */
-///*     io.SetKeyEventNativeData(imGuiKey, static_cast<int>(key), 0 /*scancode*/); // To support legacy indexing (<1.87 user code) */
-/* } */
-
-/* void ImGuiHelper::setCharacter(unsigned int c) const */
-/* { */
-/*     ImGuiIO& io = ImGui::GetIO(); */
-/*     io.AddInputCharacter(c); */
-/* } */
-
-/* void ImGuiHelper::setMousePosition(float x, float y) */
-/* { */
-/*     ImGuiIO& io = ImGui::GetIO(); */
-/*     io.MousePos = ImVec2(x, y); */
-/* } */
-
-/* void ImGuiHelper::setButtonState(UI::Mouse::Enum button, UI::Action::Enum action, int mods) */
-/* { */
-/*     ImGuiIO& io = ImGui::GetIO(); */
-
-/*     io.MouseDown[0] = (button == UI::Mouse::Enum::Left) & (action == UI::Action::Enum::Press); */
-/*     io.MouseDown[1] = (button == UI::Mouse::Enum::Right) & (action == UI::Action::Enum::Press); */
-/*     io.MouseDown[2] = (button == UI::Mouse::Enum::Middle) & (action == UI::Action::Enum::Press); */
-
-/*     setModifiers(mods); */
-/* } */
-
-/* void ImGuiHelper::setWheelScroll(double amount) */
-/* { */
-/*     ImGuiIO& io = ImGui::GetIO(); */
-
-/*     io.MouseWheel = amount; */
-/* } */
-
 void ImGuiWebGPU::begin_frame(uint32_t win_width, uint32_t win_height)
 {
     ImGuiIO& io = ImGui::GetIO();
@@ -325,26 +275,33 @@ void ImGuiWebGPU::end_frame(Texture target) {
         BufferDescriptor vb_desc{
             .label = "ui vertex buffer",
             .usage = BufferUsage::Vertex | BufferUsage::CopyDst,
-            .size = sizeof(ImDrawVert) * num_vertices,
+            .size = sizeof(ImDrawVert) * num_vertices, // note: ImDrawVert is already a multiple of 4
         };
         Buffer v_buffer = this->device.CreateBuffer(&vb_desc);
 
         this->device.GetQueue().WriteBuffer(v_buffer, 0, ui_vertices, vb_desc.size);
 
-        // FIXME : enforcing size to be a multiple of 4...
-        uint32_t size = ((static_cast<uint32_t>(commands->IdxBuffer.size()) + 1) >> 1) << 1;
-        std::cout << "nElems " << commands->IdxBuffer.size() << " -> " << size << "\n";
+        uint32_t size = commands->IdxBuffer.size_in_bytes();
         BufferDescriptor ib_desc{
             .label = "ui index buffer",
             .usage = BufferUsage::Index | BufferUsage::CopyDst,
-            .size = sizeof(uint16_t) * size, //(uint32_t)commands->IdxBuffer.size(),
+            .size = align_up(size, 4),
         };
         Buffer i_buffer = this->device.CreateBuffer(&ib_desc);
 
-        this->device.GetQueue().WriteBuffer(i_buffer, 0, ui_indices, ib_desc.size);
-        
-        std::cout << "Draw list #" << n << ": " << num_vertices << " vertices, "
-            << commands->IdxBuffer.size() << " indices\n";
+        if (commands->IdxBuffer.capacity() * sizeof(uint16_t) >= ib_desc.size) {
+            // use extra capacity to write up to alignment
+            this->device.GetQueue().WriteBuffer(i_buffer, 0, ui_indices, ib_desc.size);
+        } else {
+            uint32_t aligned_size = align_up(size - 4, 4);
+            this->device.GetQueue().WriteBuffer(i_buffer, 0, ui_indices, aligned_size);
+            uint8_t rest[4];
+            memcpy(rest, ((uint8_t *)ui_indices) + aligned_size, size - aligned_size);
+            this->device.GetQueue().WriteBuffer(i_buffer, aligned_size, rest, 4);
+        }
+
+        // std::cout << "Draw list #" << n << ": " << num_vertices << " vertices, "
+        //     << commands->IdxBuffer.size() << " indices\n";
 
         RenderPassColorAttachment colorAttachment{
             .view = target.CreateView(),
@@ -372,16 +329,13 @@ void ImGuiWebGPU::end_frame(Texture target) {
             if (pcmd->UserCallback) {
                 pcmd->UserCallback(commands, pcmd);
             } else {
-                // TODO handle big meshes:
-                // - To use 16-bit indices + allow large meshes: backend need to set 'io.BackendFlags |= ImGuiBackendFlags_RendererHasVtxOffset' and handle ImDrawCmd::VtxOffset (recommended).
-
                 pass.SetScissorRect(
                         static_cast<uint32_t>(pcmd->ClipRect.x),
                         static_cast<uint32_t>(pcmd->ClipRect.y),
                         static_cast<uint32_t>(pcmd->ClipRect.z - pcmd->ClipRect.x),
                         static_cast<uint32_t>(pcmd->ClipRect.w - pcmd->ClipRect.y));
 
-                // TODO: lowerto WGPUTexture type and use Acquire/release ?
+                // TODO: lower to WGPUTexture type and use Acquire/release ?
                 Texture* texture = static_cast<Texture*>(pcmd->TextureId);
                 if (texture->Get() != this->last_texture->Get()) {
                     if (texture->Get() == this->font_texture.Get()) {
@@ -401,14 +355,14 @@ void ImGuiWebGPU::end_frame(Texture target) {
                     }
                     this->last_texture = texture;
                 }
-                
+
                 draw_flags |= is_srgb(texture->GetFormat()) & 0x1;
                 if (draw_flags != this->last_draw_flags) {
                    this->device.GetQueue().WriteBuffer(this->draw_flags_uniform_buffer, 0, &draw_flags, 4);
                    this->last_draw_flags = draw_flags;
                 }
 
-                pass.DrawIndexed(pcmd->ElemCount, 1, pcmd->IdxOffset /*, pcmd->VtxOffset */);
+                pass.DrawIndexed(pcmd->ElemCount, 1, pcmd->IdxOffset, pcmd->VtxOffset);
             }
         }
         pass.End();
@@ -418,221 +372,325 @@ void ImGuiWebGPU::end_frame(Texture target) {
     this->device.GetQueue().Submit(1, &cmd_buffer);
 }
 
-/* ImGuiKey convertToImGuiKey(UI::Key::Enum key) */
-/* { */
-/*     switch (key) */
-/*     { */
-/*         case UI::Key::Enum::Tab: */
-/*             return ImGuiKey_Tab; */
-/*         case UI::Key::Enum::LeftArrow: */
-/*             return ImGuiKey_LeftArrow; */
-/*         case UI::Key::Enum::RightArrow: */
-/*             return ImGuiKey_RightArrow; */
-/*         case UI::Key::Enum::UpArrow: */
-/*             return ImGuiKey_UpArrow; */
-/*         case UI::Key::Enum::DownArrow: */
-/*             return ImGuiKey_DownArrow; */
-/*         case UI::Key::Enum::PageUp: */
-/*             return ImGuiKey_PageUp; */
-/*         case UI::Key::Enum::PageDown: */
-/*             return ImGuiKey_PageDown; */
-/*         case UI::Key::Enum::Home: */
-/*             return ImGuiKey_Home; */
-/*         case UI::Key::Enum::End: */
-/*             return ImGuiKey_End; */
-/*         case UI::Key::Enum::Insert: */
-/*             return ImGuiKey_Insert; */
-/*         case UI::Key::Enum::Delete: */
-/*             return ImGuiKey_Delete; */
-/*         case UI::Key::Enum::Backspace: */
-/*             return ImGuiKey_Backspace; */
-/*         case UI::Key::Enum::Space: */
-/*             return ImGuiKey_Space; */
-/*         case UI::Key::Enum::Enter: */
-/*             return ImGuiKey_Enter; */
-/*         case UI::Key::Enum::Escape: */
-/*             return ImGuiKey_Escape; */
-/*         case UI::Key::Enum::Apostrophe: */
-/*             return ImGuiKey_Apostrophe; */
-/*         case UI::Key::Enum::Comma: */
-/*             return ImGuiKey_Comma; */
-/*         case UI::Key::Enum::Minus: */
-/*             return ImGuiKey_Minus; */
-/*         case UI::Key::Enum::Period: */
-/*             return ImGuiKey_Period; */
-/*         case UI::Key::Enum::Slash: */
-/*             return ImGuiKey_Slash; */
-/*         case UI::Key::Enum::Semicolon: */
-/*             return ImGuiKey_Semicolon; */
-/*         case UI::Key::Enum::Equal: */
-/*             return ImGuiKey_Equal; */
-/*         case UI::Key::Enum::LeftBracket: */
-/*             return ImGuiKey_LeftBracket; */
-/*         case UI::Key::Enum::Backslash: */
-/*             return ImGuiKey_Backslash; */
-/*         case UI::Key::Enum::RightBracket: */
-/*             return ImGuiKey_RightBracket; */
-/*         case UI::Key::Enum::GraveAccent: */
-/*             return ImGuiKey_GraveAccent; */
-/*         case UI::Key::Enum::CapsLock: */
-/*             return ImGuiKey_CapsLock; */
-/*         case UI::Key::Enum::ScrollLock: */
-/*             return ImGuiKey_ScrollLock; */
-/*         case UI::Key::Enum::NumLock: */
-/*             return ImGuiKey_NumLock; */
-/*         case UI::Key::Enum::PrintScreen: */
-/*             return ImGuiKey_PrintScreen; */
-/*         case UI::Key::Enum::Pause: */
-/*             return ImGuiKey_Pause; */
-/*         case UI::Key::Enum::Keypad0: */
-/*             return ImGuiKey_Keypad0; */
-/*         case UI::Key::Enum::Keypad1: */
-/*             return ImGuiKey_Keypad1; */
-/*         case UI::Key::Enum::Keypad2: */
-/*             return ImGuiKey_Keypad2; */
-/*         case UI::Key::Enum::Keypad3: */
-/*             return ImGuiKey_Keypad3; */
-/*         case UI::Key::Enum::Keypad4: */
-/*             return ImGuiKey_Keypad4; */
-/*         case UI::Key::Enum::Keypad5: */
-/*             return ImGuiKey_Keypad5; */
-/*         case UI::Key::Enum::Keypad6: */
-/*             return ImGuiKey_Keypad6; */
-/*         case UI::Key::Enum::Keypad7: */
-/*             return ImGuiKey_Keypad7; */
-/*         case UI::Key::Enum::Keypad8: */
-/*             return ImGuiKey_Keypad8; */
-/*         case UI::Key::Enum::Keypad9: */
-/*             return ImGuiKey_Keypad9; */
-/*         case UI::Key::Enum::KeypadDecimal: */
-/*             return ImGuiKey_KeypadDecimal; */
-/*         case UI::Key::Enum::KeypadDivide: */
-/*             return ImGuiKey_KeypadDivide; */
-/*         case UI::Key::Enum::KeypadMultiply: */
-/*             return ImGuiKey_KeypadMultiply; */
-/*         case UI::Key::Enum::KeypadSubtract: */
-/*             return ImGuiKey_KeypadSubtract; */
-/*         case UI::Key::Enum::KeypadAdd: */
-/*             return ImGuiKey_KeypadAdd; */
-/*         case UI::Key::Enum::KeypadEnter: */
-/*             return ImGuiKey_KeypadEnter; */
-/*         case UI::Key::Enum::KeypadEqual: */
-/*             return ImGuiKey_KeypadEqual; */
-/*         case UI::Key::Enum::LeftShift: */
-/*             return ImGuiKey_LeftShift; */
-/*         case UI::Key::Enum::LeftCtrl: */
-/*             return ImGuiKey_LeftCtrl; */
-/*         case UI::Key::Enum::LeftAlt: */
-/*             return ImGuiKey_LeftAlt; */
-/*         case UI::Key::Enum::LeftSuper: */
-/*             return ImGuiKey_LeftSuper; */
-/*         case UI::Key::Enum::RightShift: */
-/*             return ImGuiKey_RightShift; */
-/*         case UI::Key::Enum::RightCtrl: */
-/*             return ImGuiKey_RightCtrl; */
-/*         case UI::Key::Enum::RightAlt: */
-/*             return ImGuiKey_RightAlt; */
-/*         case UI::Key::Enum::RightSuper: */
-/*             return ImGuiKey_RightSuper; */
-/*         case UI::Key::Enum::Menu: */
-/*             return ImGuiKey_Menu; */
-/*         case UI::Key::Enum::Key0: */
-/*             return ImGuiKey_0; */
-/*         case UI::Key::Enum::Key1: */
-/*             return ImGuiKey_1; */
-/*         case UI::Key::Enum::Key2: */
-/*             return ImGuiKey_2; */
-/*         case UI::Key::Enum::Key3: */
-/*             return ImGuiKey_3; */
-/*         case UI::Key::Enum::Key4: */
-/*             return ImGuiKey_4; */
-/*         case UI::Key::Enum::Key5: */
-/*             return ImGuiKey_5; */
-/*         case UI::Key::Enum::Key6: */
-/*             return ImGuiKey_6; */
-/*         case UI::Key::Enum::Key7: */
-/*             return ImGuiKey_7; */
-/*         case UI::Key::Enum::Key8: */
-/*             return ImGuiKey_8; */
-/*         case UI::Key::Enum::Key9: */
-/*             return ImGuiKey_9; */
-/*         case UI::Key::Enum::KeyA: */
-/*             return ImGuiKey_A; */
-/*         case UI::Key::Enum::KeyB: */
-/*             return ImGuiKey_B; */
-/*         case UI::Key::Enum::KeyC: */
-/*             return ImGuiKey_C; */
-/*         case UI::Key::Enum::KeyD: */
-/*             return ImGuiKey_D; */
-/*         case UI::Key::Enum::KeyE: */
-/*             return ImGuiKey_E; */
-/*         case UI::Key::Enum::KeyF: */
-/*             return ImGuiKey_F; */
-/*         case UI::Key::Enum::KeyG: */
-/*             return ImGuiKey_G; */
-/*         case UI::Key::Enum::KeyH: */
-/*             return ImGuiKey_H; */
-/*         case UI::Key::Enum::KeyI: */
-/*             return ImGuiKey_I; */
-/*         case UI::Key::Enum::KeyJ: */
-/*             return ImGuiKey_J; */
-/*         case UI::Key::Enum::KeyK: */
-/*             return ImGuiKey_K; */
-/*         case UI::Key::Enum::KeyL: */
-/*             return ImGuiKey_L; */
-/*         case UI::Key::Enum::KeyM: */
-/*             return ImGuiKey_M; */
-/*         case UI::Key::Enum::KeyN: */
-/*             return ImGuiKey_N; */
-/*         case UI::Key::Enum::KeyO: */
-/*             return ImGuiKey_O; */
-/*         case UI::Key::Enum::KeyP: */
-/*             return ImGuiKey_P; */
-/*         case UI::Key::Enum::KeyQ: */
-/*             return ImGuiKey_Q; */
-/*         case UI::Key::Enum::KeyR: */
-/*             return ImGuiKey_R; */
-/*         case UI::Key::Enum::KeyS: */
-/*             return ImGuiKey_S; */
-/*         case UI::Key::Enum::KeyT: */
-/*             return ImGuiKey_T; */
-/*         case UI::Key::Enum::KeyU: */
-/*             return ImGuiKey_U; */
-/*         case UI::Key::Enum::KeyV: */
-/*             return ImGuiKey_V; */
-/*         case UI::Key::Enum::KeyW: */
-/*             return ImGuiKey_W; */
-/*         case UI::Key::Enum::KeyX: */
-/*             return ImGuiKey_X; */
-/*         case UI::Key::Enum::KeyY: */
-/*             return ImGuiKey_Y; */
-/*         case UI::Key::Enum::KeyZ: */
-/*             return ImGuiKey_Z; */
-/*         case UI::Key::Enum::F1: */
-/*             return ImGuiKey_F1; */
-/*         case UI::Key::Enum::F2: */
-/*             return ImGuiKey_F2; */
-/*         case UI::Key::Enum::F3: */
-/*             return ImGuiKey_F3; */
-/*         case UI::Key::Enum::F4: */
-/*             return ImGuiKey_F4; */
-/*         case UI::Key::Enum::F5: */
-/*             return ImGuiKey_F5; */
-/*         case UI::Key::Enum::F6: */
-/*             return ImGuiKey_F6; */
-/*         case UI::Key::Enum::F7: */
-/*             return ImGuiKey_F7; */
-/*         case UI::Key::Enum::F8: */
-/*             return ImGuiKey_F8; */
-/*         case UI::Key::Enum::F9: */
-/*             return ImGuiKey_F9; */
-/*         case UI::Key::Enum::F10: */
-/*             return ImGuiKey_F10; */
-/*         case UI::Key::Enum::F11: */
-/*             return ImGuiKey_F11; */
-/*         case UI::Key::Enum::F12: */
-/*             return ImGuiKey_F12; */
-/*         default: */
-/*             return ImGuiKey_None; */
-/*     } */
-/* } */
+ImGuiGlfw::ImGuiGlfw(GLFWwindow * window) : window(window) {
+    register_callbacks(window);
+}
+
+ImGuiGlfw::~ImGuiGlfw() {
+    unregister_callbacks(this->window);
+}
+
+bool ImGuiGlfw::is_idle() {
+    this->refresh_frame_count = this->refresh_frame_count > 0 ? this->refresh_frame_count - 1 : 0;
+    return this->refresh_frame_count == 0;
+}
+
+void ImGuiGlfw::register_callbacks(GLFWwindow * window) {
+    std::cout << "Registering ImGUI\n";
+    this->prev_window_pointer = glfwGetWindowUserPointer(window);
+    this->prev_window_size_cb = glfwSetWindowSizeCallback(window, ImGuiGlfw::window_size_cb);
+    this->prev_mouse_button_cb = glfwSetMouseButtonCallback(window, ImGuiGlfw::mouse_button_cb);
+    this->prev_cursor_pos_cb = glfwSetCursorPosCallback(window, ImGuiGlfw::cursor_pos_cb);
+    this->prev_cursor_enter_cb = glfwSetCursorEnterCallback(window, ImGuiGlfw::cursor_enter_cb);
+    this->prev_scroll_cb = glfwSetScrollCallback(window, ImGuiGlfw::scroll_cb);
+    this->prev_key_cb = glfwSetKeyCallback(window, ImGuiGlfw::key_cb);
+    this->prev_char_cb = glfwSetCharCallback(window, ImGuiGlfw::char_cb);
+    this->prev_char_mods_cb = glfwSetCharModsCallback(window, ImGuiGlfw::char_mods_cb);
+
+    glfwSetWindowUserPointer(window, this);
+}
+
+void ImGuiGlfw::unregister_callbacks(GLFWwindow * window) {
+    std::cout << "Unregistering ImGUI\n";
+    glfwSetWindowUserPointer(window, this->prev_window_pointer);
+    glfwSetWindowSizeCallback(window, this->prev_window_size_cb);
+    glfwSetMouseButtonCallback(window, this->prev_mouse_button_cb);
+    glfwSetCursorPosCallback(window, this->prev_cursor_pos_cb);
+    glfwSetCursorEnterCallback(window, this->prev_cursor_enter_cb);
+    glfwSetScrollCallback(window, this->prev_scroll_cb);
+    glfwSetKeyCallback(window, this->prev_key_cb);
+    glfwSetCharCallback(window, this->prev_char_cb);
+    //glfwSetCharModsCallback(window, this->prev_char_mods_cb);
+}
+
+static void set_modifiers(GLFWwindow *window) {
+    ImGuiIO& io = ImGui::GetIO();
+    io.AddKeyEvent(ImGuiMod_Ctrl,  (glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS) || (glfwGetKey(window, GLFW_KEY_RIGHT_CONTROL) == GLFW_PRESS));
+    io.AddKeyEvent(ImGuiMod_Shift, (glfwGetKey(window, GLFW_KEY_LEFT_SHIFT)   == GLFW_PRESS) || (glfwGetKey(window, GLFW_KEY_RIGHT_SHIFT)   == GLFW_PRESS));
+    io.AddKeyEvent(ImGuiMod_Alt,   (glfwGetKey(window, GLFW_KEY_LEFT_ALT)     == GLFW_PRESS) || (glfwGetKey(window, GLFW_KEY_RIGHT_ALT)     == GLFW_PRESS));
+    io.AddKeyEvent(ImGuiMod_Super, (glfwGetKey(window, GLFW_KEY_LEFT_SUPER)   == GLFW_PRESS) || (glfwGetKey(window, GLFW_KEY_RIGHT_SUPER)   == GLFW_PRESS));
+}
+
+// from ImGUI distro sample GLTF backend
+static int translate_untranslated_key(int key, int scancode)
+{
+#if GLFW_HAS_GETKEYNAME && !defined(__EMSCRIPTEN__)
+    // GLFW 3.1+ attempts to "untranslate" keys, which goes the opposite of what every other framework does, making using lettered shortcuts difficult.
+    // (It had reasons to do so: namely GLFW is/was more likely to be used for WASD-type game controls rather than lettered shortcuts, but IHMO the 3.1 change could have been done differently)
+    // See https://github.com/glfw/glfw/issues/1502 for details.
+    // Adding a workaround to undo this (so our keys are translated->untranslated->translated, likely a lossy process).
+    // This won't cover edge cases but this is at least going to cover common cases.
+    if (key >= GLFW_KEY_KP_0 && key <= GLFW_KEY_KP_EQUAL)
+        return key;
+    GLFWerrorfun prev_error_callback = glfwSetErrorCallback(nullptr);
+    const char* key_name = glfwGetKeyName(key, scancode);
+    glfwSetErrorCallback(prev_error_callback);
+#if GLFW_HAS_GETERROR && !defined(__EMSCRIPTEN__) // Eat errors (see #5908)
+    (void)glfwGetError(nullptr);
+#endif
+    if (key_name && key_name[0] != 0 && key_name[1] == 0)
+    {
+        const char char_names[] = "`-=[]\\,;\'./";
+        const int char_keys[] = { GLFW_KEY_GRAVE_ACCENT, GLFW_KEY_MINUS, GLFW_KEY_EQUAL, GLFW_KEY_LEFT_BRACKET, GLFW_KEY_RIGHT_BRACKET, GLFW_KEY_BACKSLASH, GLFW_KEY_COMMA, GLFW_KEY_SEMICOLON, GLFW_KEY_APOSTROPHE, GLFW_KEY_PERIOD, GLFW_KEY_SLASH, 0 };
+        IM_ASSERT(IM_ARRAYSIZE(char_names) == IM_ARRAYSIZE(char_keys));
+        if (key_name[0] >= '0' && key_name[0] <= '9')               { key = GLFW_KEY_0 + (key_name[0] - '0'); }
+        else if (key_name[0] >= 'A' && key_name[0] <= 'Z')          { key = GLFW_KEY_A + (key_name[0] - 'A'); }
+        else if (key_name[0] >= 'a' && key_name[0] <= 'z')          { key = GLFW_KEY_A + (key_name[0] - 'a'); }
+        else if (const char* p = strchr(char_names, key_name[0]))   { key = char_keys[p - char_names]; }
+    }
+    // if (action == GLFW_PRESS) printf("key %d scancode %d name '%s'\n", key, scancode, key_name);
+#else
+    IM_UNUSED(scancode);
+#endif
+    return key;
+}
+
+// from ImGUI distro sample GLTF backend
+static ImGuiKey to_imgui_key(int key)
+{
+    switch (key)
+    {
+        case GLFW_KEY_TAB: return ImGuiKey_Tab;
+        case GLFW_KEY_LEFT: return ImGuiKey_LeftArrow;
+        case GLFW_KEY_RIGHT: return ImGuiKey_RightArrow;
+        case GLFW_KEY_UP: return ImGuiKey_UpArrow;
+        case GLFW_KEY_DOWN: return ImGuiKey_DownArrow;
+        case GLFW_KEY_PAGE_UP: return ImGuiKey_PageUp;
+        case GLFW_KEY_PAGE_DOWN: return ImGuiKey_PageDown;
+        case GLFW_KEY_HOME: return ImGuiKey_Home;
+        case GLFW_KEY_END: return ImGuiKey_End;
+        case GLFW_KEY_INSERT: return ImGuiKey_Insert;
+        case GLFW_KEY_DELETE: return ImGuiKey_Delete;
+        case GLFW_KEY_BACKSPACE: return ImGuiKey_Backspace;
+        case GLFW_KEY_SPACE: return ImGuiKey_Space;
+        case GLFW_KEY_ENTER: return ImGuiKey_Enter;
+        case GLFW_KEY_ESCAPE: return ImGuiKey_Escape;
+        case GLFW_KEY_APOSTROPHE: return ImGuiKey_Apostrophe;
+        case GLFW_KEY_COMMA: return ImGuiKey_Comma;
+        case GLFW_KEY_MINUS: return ImGuiKey_Minus;
+        case GLFW_KEY_PERIOD: return ImGuiKey_Period;
+        case GLFW_KEY_SLASH: return ImGuiKey_Slash;
+        case GLFW_KEY_SEMICOLON: return ImGuiKey_Semicolon;
+        case GLFW_KEY_EQUAL: return ImGuiKey_Equal;
+        case GLFW_KEY_LEFT_BRACKET: return ImGuiKey_LeftBracket;
+        case GLFW_KEY_BACKSLASH: return ImGuiKey_Backslash;
+        case GLFW_KEY_RIGHT_BRACKET: return ImGuiKey_RightBracket;
+        case GLFW_KEY_GRAVE_ACCENT: return ImGuiKey_GraveAccent;
+        case GLFW_KEY_CAPS_LOCK: return ImGuiKey_CapsLock;
+        case GLFW_KEY_SCROLL_LOCK: return ImGuiKey_ScrollLock;
+        case GLFW_KEY_NUM_LOCK: return ImGuiKey_NumLock;
+        case GLFW_KEY_PRINT_SCREEN: return ImGuiKey_PrintScreen;
+        case GLFW_KEY_PAUSE: return ImGuiKey_Pause;
+        case GLFW_KEY_KP_0: return ImGuiKey_Keypad0;
+        case GLFW_KEY_KP_1: return ImGuiKey_Keypad1;
+        case GLFW_KEY_KP_2: return ImGuiKey_Keypad2;
+        case GLFW_KEY_KP_3: return ImGuiKey_Keypad3;
+        case GLFW_KEY_KP_4: return ImGuiKey_Keypad4;
+        case GLFW_KEY_KP_5: return ImGuiKey_Keypad5;
+        case GLFW_KEY_KP_6: return ImGuiKey_Keypad6;
+        case GLFW_KEY_KP_7: return ImGuiKey_Keypad7;
+        case GLFW_KEY_KP_8: return ImGuiKey_Keypad8;
+        case GLFW_KEY_KP_9: return ImGuiKey_Keypad9;
+        case GLFW_KEY_KP_DECIMAL: return ImGuiKey_KeypadDecimal;
+        case GLFW_KEY_KP_DIVIDE: return ImGuiKey_KeypadDivide;
+        case GLFW_KEY_KP_MULTIPLY: return ImGuiKey_KeypadMultiply;
+        case GLFW_KEY_KP_SUBTRACT: return ImGuiKey_KeypadSubtract;
+        case GLFW_KEY_KP_ADD: return ImGuiKey_KeypadAdd;
+        case GLFW_KEY_KP_ENTER: return ImGuiKey_KeypadEnter;
+        case GLFW_KEY_KP_EQUAL: return ImGuiKey_KeypadEqual;
+        case GLFW_KEY_LEFT_SHIFT: return ImGuiKey_LeftShift;
+        case GLFW_KEY_LEFT_CONTROL: return ImGuiKey_LeftCtrl;
+        case GLFW_KEY_LEFT_ALT: return ImGuiKey_LeftAlt;
+        case GLFW_KEY_LEFT_SUPER: return ImGuiKey_LeftSuper;
+        case GLFW_KEY_RIGHT_SHIFT: return ImGuiKey_RightShift;
+        case GLFW_KEY_RIGHT_CONTROL: return ImGuiKey_RightCtrl;
+        case GLFW_KEY_RIGHT_ALT: return ImGuiKey_RightAlt;
+        case GLFW_KEY_RIGHT_SUPER: return ImGuiKey_RightSuper;
+        case GLFW_KEY_MENU: return ImGuiKey_Menu;
+        case GLFW_KEY_0: return ImGuiKey_0;
+        case GLFW_KEY_1: return ImGuiKey_1;
+        case GLFW_KEY_2: return ImGuiKey_2;
+        case GLFW_KEY_3: return ImGuiKey_3;
+        case GLFW_KEY_4: return ImGuiKey_4;
+        case GLFW_KEY_5: return ImGuiKey_5;
+        case GLFW_KEY_6: return ImGuiKey_6;
+        case GLFW_KEY_7: return ImGuiKey_7;
+        case GLFW_KEY_8: return ImGuiKey_8;
+        case GLFW_KEY_9: return ImGuiKey_9;
+        case GLFW_KEY_A: return ImGuiKey_A;
+        case GLFW_KEY_B: return ImGuiKey_B;
+        case GLFW_KEY_C: return ImGuiKey_C;
+        case GLFW_KEY_D: return ImGuiKey_D;
+        case GLFW_KEY_E: return ImGuiKey_E;
+        case GLFW_KEY_F: return ImGuiKey_F;
+        case GLFW_KEY_G: return ImGuiKey_G;
+        case GLFW_KEY_H: return ImGuiKey_H;
+        case GLFW_KEY_I: return ImGuiKey_I;
+        case GLFW_KEY_J: return ImGuiKey_J;
+        case GLFW_KEY_K: return ImGuiKey_K;
+        case GLFW_KEY_L: return ImGuiKey_L;
+        case GLFW_KEY_M: return ImGuiKey_M;
+        case GLFW_KEY_N: return ImGuiKey_N;
+        case GLFW_KEY_O: return ImGuiKey_O;
+        case GLFW_KEY_P: return ImGuiKey_P;
+        case GLFW_KEY_Q: return ImGuiKey_Q;
+        case GLFW_KEY_R: return ImGuiKey_R;
+        case GLFW_KEY_S: return ImGuiKey_S;
+        case GLFW_KEY_T: return ImGuiKey_T;
+        case GLFW_KEY_U: return ImGuiKey_U;
+        case GLFW_KEY_V: return ImGuiKey_V;
+        case GLFW_KEY_W: return ImGuiKey_W;
+        case GLFW_KEY_X: return ImGuiKey_X;
+        case GLFW_KEY_Y: return ImGuiKey_Y;
+        case GLFW_KEY_Z: return ImGuiKey_Z;
+        case GLFW_KEY_F1: return ImGuiKey_F1;
+        case GLFW_KEY_F2: return ImGuiKey_F2;
+        case GLFW_KEY_F3: return ImGuiKey_F3;
+        case GLFW_KEY_F4: return ImGuiKey_F4;
+        case GLFW_KEY_F5: return ImGuiKey_F5;
+        case GLFW_KEY_F6: return ImGuiKey_F6;
+        case GLFW_KEY_F7: return ImGuiKey_F7;
+        case GLFW_KEY_F8: return ImGuiKey_F8;
+        case GLFW_KEY_F9: return ImGuiKey_F9;
+        case GLFW_KEY_F10: return ImGuiKey_F10;
+        case GLFW_KEY_F11: return ImGuiKey_F11;
+        case GLFW_KEY_F12: return ImGuiKey_F12;
+        case GLFW_KEY_F13: return ImGuiKey_F13;
+        case GLFW_KEY_F14: return ImGuiKey_F14;
+        case GLFW_KEY_F15: return ImGuiKey_F15;
+        case GLFW_KEY_F16: return ImGuiKey_F16;
+        case GLFW_KEY_F17: return ImGuiKey_F17;
+        case GLFW_KEY_F18: return ImGuiKey_F18;
+        case GLFW_KEY_F19: return ImGuiKey_F19;
+        case GLFW_KEY_F20: return ImGuiKey_F20;
+        case GLFW_KEY_F21: return ImGuiKey_F21;
+        case GLFW_KEY_F22: return ImGuiKey_F22;
+        case GLFW_KEY_F23: return ImGuiKey_F23;
+        case GLFW_KEY_F24: return ImGuiKey_F24;
+        default: return ImGuiKey_None;
+    }
+}
+
+
+void ImGuiGlfw::window_size_cb(GLFWwindow* window, int width, int height) {
+    auto * self = reinterpret_cast<ImGuiGlfw*>(glfwGetWindowUserPointer(window));
+    self->refresh_frame_count = 2;
+    if (self->prev_window_size_cb) {
+        glfwSetWindowUserPointer(window, self->prev_window_pointer);
+        self->prev_window_size_cb(window, width, height);
+        glfwSetWindowUserPointer(window, self);
+    }
+}
+
+void ImGuiGlfw::mouse_button_cb(GLFWwindow *window, int button, int action, int mods) {
+    ImGuiIO& io = ImGui::GetIO();
+
+    if (button >= 0 && button < ImGuiMouseButton_COUNT)
+        io.AddMouseButtonEvent(button, action == GLFW_PRESS);
+
+    set_modifiers(window);
+
+    auto * self = reinterpret_cast<ImGuiGlfw*>(glfwGetWindowUserPointer(window));
+    self->refresh_frame_count = 3;
+    if (self->prev_mouse_button_cb) {
+        glfwSetWindowUserPointer(window, self->prev_window_pointer);
+        self->prev_mouse_button_cb(window, button, action, mods);
+        glfwSetWindowUserPointer(window, self);
+    }
+}
+
+void ImGuiGlfw::cursor_pos_cb(GLFWwindow *window, double xpos, double ypos) {
+    ImGuiIO& io = ImGui::GetIO();
+    io.AddMousePosEvent((float)xpos, (float)ypos);
+
+    // TODO
+    // this->LastValidMousePos = ImVec2((float)x, (float)y);
+
+    auto * self = reinterpret_cast<ImGuiGlfw*>(glfwGetWindowUserPointer(window));
+    self->refresh_frame_count = 2;
+    if (self->prev_cursor_pos_cb) {
+        glfwSetWindowUserPointer(window, self->prev_window_pointer);
+        self->prev_cursor_pos_cb(window, xpos, ypos);
+        glfwSetWindowUserPointer(window, self);
+    }
+}
+
+void ImGuiGlfw::cursor_enter_cb(GLFWwindow *window, int entered) {
+    auto * self = reinterpret_cast<ImGuiGlfw*>(glfwGetWindowUserPointer(window));
+    self->refresh_frame_count = 2;
+    if (self->prev_cursor_enter_cb) {
+        glfwSetWindowUserPointer(window, self->prev_window_pointer);
+        self->prev_cursor_enter_cb(window, entered);
+        glfwSetWindowUserPointer(window, self);
+    }
+}
+
+void ImGuiGlfw::scroll_cb(GLFWwindow *window, double xoffset, double yoffset) {
+    // TODO ignore under Emscripten
+
+    ImGuiIO& io = ImGui::GetIO();
+    io.AddMouseWheelEvent((float)xoffset, (float)yoffset);
+
+    auto * self = reinterpret_cast<ImGuiGlfw*>(glfwGetWindowUserPointer(window));
+    self->refresh_frame_count = 2;
+    if (self->prev_scroll_cb) {
+        glfwSetWindowUserPointer(window, self->prev_window_pointer);
+        self->prev_scroll_cb(window, xoffset, yoffset);
+        glfwSetWindowUserPointer(window, self);
+    }
+}
+
+void ImGuiGlfw::key_cb(GLFWwindow *window, int key, int scancode, int action, int mods) {
+    if (action != GLFW_PRESS && action != GLFW_RELEASE) {
+        return;
+    }
+
+    set_modifiers(window);
+    key = translate_untranslated_key(key, scancode);
+
+    ImGuiIO& io = ImGui::GetIO();
+    ImGuiKey imgui_key = to_imgui_key(key);
+    io.AddKeyEvent(imgui_key, (action == GLFW_PRESS));
+    io.SetKeyEventNativeData(imgui_key, key, scancode); // To support legacy indexing (<1.87 user code)
+
+    auto * self = reinterpret_cast<ImGuiGlfw*>(glfwGetWindowUserPointer(window));
+    self->refresh_frame_count = 2;
+    if (self->prev_key_cb) {
+        glfwSetWindowUserPointer(window, self->prev_window_pointer);
+        self->prev_key_cb(window, key, scancode, action, mods);
+        glfwSetWindowUserPointer(window, self);
+    }
+}
+
+void ImGuiGlfw::char_cb(GLFWwindow *window, unsigned int codepoint) {
+    ImGuiIO& io = ImGui::GetIO();
+    io.AddInputCharacter(codepoint);
+
+    auto * self = reinterpret_cast<ImGuiGlfw*>(glfwGetWindowUserPointer(window));
+    self->refresh_frame_count = 2;
+    if (self->prev_char_cb) {
+        glfwSetWindowUserPointer(window, self->prev_window_pointer);
+        self->prev_char_cb(window, codepoint);
+        glfwSetWindowUserPointer(window, self);
+    }
+}
+
+void ImGuiGlfw::char_mods_cb(GLFWwindow *window, unsigned int codepoint, int mods) {
+    auto * self = reinterpret_cast<ImGuiGlfw*>(glfwGetWindowUserPointer(window));
+    self->refresh_frame_count = 2;
+    if (self->prev_char_mods_cb) {
+        glfwSetWindowUserPointer(window, self->prev_window_pointer);
+        self->prev_char_mods_cb(window, codepoint, mods);
+        glfwSetWindowUserPointer(window, self);
+    }
+}
